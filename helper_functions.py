@@ -3,6 +3,8 @@ import numpy as np
 from time import time
 from datetime import datetime
 import pickle
+import pycaret.classification
+import pycaret.regression
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -23,7 +25,7 @@ def normalize_minmax(data):
         return np.array(norm_list)
 
 def normalize_origin(data):
-        bias = data[0]
+        bias = data.iloc[0]
         return data-bias
 
 
@@ -105,48 +107,6 @@ def create_modeling_df(data_input, number_of_snippets, snippet_size=20, projecti
         return df
                 
 
-
-
-
-"""
-def _create_model(df, init_algo="k-means++", n_clusters=10, n_init=4):
-        scaler = StandardScaler()
-        kmeans = KMeans(init=init_algo, n_clusters=n_clusters, n_init=n_init, random_state=0)
-        t0 = time()
-        print("Initiating fit...")
-        model = make_pipeline(scaler, kmeans).fit(df)
-        fit_time = time() - t0
-        print(f"Fit ended in {fit_time:.3f} seconds.")
-        results = (model, model[-1].inertia_, fit_time)
-        return results
-
-def save_model(model, path="music_model.pkl"):
-        kmeans_model = model[-1]
-        save_text = f"Model saved - {kmeans_model}\nInertia = {kmeans_model.inertia_:.2f}\n"
-        time_text = str(datetime.now())[:-10] + "h" + "\n"
-        file_text = f"Filename: {path}\n"
-
-        with open(path, "wb") as f:
-                pickle.dump(model,f)
-
-        with open("model_log.txt", "a") as f:
-                f.write("--------------\n" + save_text + time_text + file_text)
-        
-        return 0
-
-def load_model(path="music_model.pkl"):
-
-        try:
-                with open(path, "rb") as f:
-                        model = pickle.load(f)
-        except FileNotFoundError: 
-                print("Model pickle not found!") 
-        
-        return model
-"""
-
-def cluster_song():
-        return 0
 
 def visualise_model(df, init_algo="k-means++", n_clusters=10, n_init=4):
 
@@ -301,6 +261,44 @@ def run():
         print(f"Results for {kmeans_model}: inertia = {inertia:.2f}; fit_time = {fit_time:.3f}")
 
         return 0
+
+"""
+def _create_model(df, init_algo="k-means++", n_clusters=10, n_init=4):
+        scaler = StandardScaler()
+        kmeans = KMeans(init=init_algo, n_clusters=n_clusters, n_init=n_init, random_state=0)
+        t0 = time()
+        print("Initiating fit...")
+        model = make_pipeline(scaler, kmeans).fit(df)
+        fit_time = time() - t0
+        print(f"Fit ended in {fit_time:.3f} seconds.")
+        results = (model, model[-1].inertia_, fit_time)
+        return results
+
+def save_model(model, path="music_model.pkl"):
+        kmeans_model = model[-1]
+        save_text = f"Model saved - {kmeans_model}\nInertia = {kmeans_model.inertia_:.2f}\n"
+        time_text = str(datetime.now())[:-10] + "h" + "\n"
+        file_text = f"Filename: {path}\n"
+
+        with open(path, "wb") as f:
+                pickle.dump(model,f)
+
+        with open("model_log.txt", "a") as f:
+                f.write("--------------\n" + save_text + time_text + file_text)
+        
+        return 0
+
+def load_model(path="music_model.pkl"):
+
+        try:
+                with open(path, "rb") as f:
+                        model = pickle.load(f)
+        except FileNotFoundError: 
+                print("Model pickle not found!") 
+        
+        return model
+"""
+
 
 if __name__ == "__main__":
         run()
