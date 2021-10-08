@@ -3,6 +3,7 @@ import numpy as np
 from time import time
 from datetime import datetime
 import pickle
+import requests
 import pycaret.classification
 import pycaret.regression
 from sklearn.preprocessing import MinMaxScaler
@@ -13,6 +14,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.metrics import silhouette_score, homogeneity_score, completeness_score, \
 v_measure_score, adjusted_rand_score, adjusted_mutual_info_score, r2_score
 import matplotlib.pyplot as plt
+import sys
 
 def normalize_vector(data):
         norm = np.linalg.norm(data)
@@ -41,7 +43,34 @@ def import_index_data(symbol="GDAXI", path="./data/indexData.csv"):
 
         return df
 
-def create_modeling_df(data_input, number_of_snippets, snippet_size=20, projection_step=10, scaling="minmax"):
+def import_stock_data(symbol, apikey=None):
+
+        if not apikey:
+                with open(r"C:\Users\carlo\OneDrive\Programming\alphavantage.txt", "r") as f:
+                        apikey = f.readline().strip()
+
+        datatype = "csv"  #json is the other option is full (20 plus years)
+        outputsize = "compact" #returns only the 100 last data points. The other option is full
+
+        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}\
+&outputsize={outputsize}&apikey={apikey}&datatype={datatype}"
+        
+        df = pd.read_csv(url)
+
+        if len(df) == 2 or len(df) < 30:
+                df = pd.DataFrame(columns=["a"])
+                return df
+
+        df = df[["timestamp","close", "volume"]]
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.rename(columns={'timestamp':'Date', "close":"Close", "volume":"Volume"})
+        df = df.iloc[::-1].reset_index(drop=True)  #Reverse the df
+        
+
+        return df    
+
+
+def create_modeling_df(data_input, number_of_snippets, snippet_size=30, projection_step=10, scaling="minmax"):
         #Scale the data
         data = data_input.copy()
         #scaler = MinMaxScaler()
@@ -92,7 +121,7 @@ def create_modeling_df(data_input, number_of_snippets, snippet_size=20, projecti
                         #Create the metada for each row
                         date = data.iloc[pivot, 0]
                         pivot_value =  data.iloc[pivot, 1]
-                        target_value = data.iloc[pivot + projection_step, 1]
+                        target_value = 100 * (data.iloc[pivot + projection_step, 1] - pivot_value)/pivot_value
                         meta_data = [date, pivot_value, target_value]
                         
                         #Create the row and add it to the dataframe
@@ -106,9 +135,105 @@ def create_modeling_df(data_input, number_of_snippets, snippet_size=20, projecti
 
         return df
                 
+def create_initial_df(list_of_indexes=None, setup_data=None):
+
+        if not list_of_indexes:
+                list_of_indexes = ['NYA', 'IXIC', 'HSI', 'GSPTSE', 'NSEI', 
+                'GDAXI', 'KS11', 'SSMI', 'TWII',  'N225', 'N100']
+
+        if not setup_data:
+                setup_data = {"number_of_snippets":100, "previous_days":700, 
+                "snippet_size":30, "projection_step":10, "scaling":"minmax"}
+
+        dfs = []
+        for index in list_of_indexes:
+                a = import_index_data(symbol=index)
+                a = a.iloc[-(setup_data["previous_days"]):,:]
+                a = a.reset_index(drop=True)
+                dfs.append(a)
+
+        modeling_dfs=[]
+        for df in dfs:
+                modeling_dfs.append(create_modeling_df(df, 
+                        number_of_snippets=setup_data["number_of_snippets"], 
+                        snippet_size=setup_data["snippet_size"], 
+                        projection_step=setup_data["projection_step"], 
+                        scaling=setup_data["scaling"]))
+
+        #Unify the training datasets into one
+        initial_df = pd.concat(modeling_dfs)
+
+        return initial_df
+
+def create_prediction_row(stock_df, pivot_date=None, setup_data=None):
+        if not setup_data:
+                setup_data = {"number_of_snippets":100, "previous_days":700, 
+                "snippet_size":30, "projection_step":10, "scaling":"minmax"}
+
+        #Create the columns that the df will have
+        cols = [0]*setup_data["snippet_size"]*2
+        for i in range(setup_data["snippet_size"]):
+                cols[i] = f"Vol{i}"
+                cols[setup_data["snippet_size"] + i] = f"Close{i}"
+        cols = cols + ["Pivot_date", "Pivot_value"]
+
+        #We create the row, which is actually a Dataframe
+        df = pd.DataFrame(columns=cols)
+
+        if stock_df.empty or len(stock_df) < 30:
+                return df
+
+        if not pivot_date:
+                pivot_date = stock_df.iloc[-1,0]
+        else:
+                pivot_date = datetime.strptime(pivot_date,"%Y-%m-%d").date()
+                pivot_date = np.datetime64(pivot_date)
+
+        index = stock_df[stock_df["Date"]==pivot_date].index.values
+
+        if len(index) == 1:
+                pivot = int(index)
+        else:
+                print("Pivot date passed unavailable for prediction.")
+                return df
+
+        prices = stock_df.iloc[(pivot-setup_data["snippet_size"]):pivot, 1]  # 1 is the column number for closing price
+        volumes = stock_df.iloc[(pivot-setup_data["snippet_size"]):pivot, 2]  # 2 is for the volume
+
+        #Scaling of each row
+        if setup_data["scaling"]=="minmax":
+                volumes = normalize_minmax(volumes)
+                prices = normalize_minmax(prices)
+        elif setup_data["scaling"]=="vector":
+                volumes = normalize_vector(volumes)
+                prices = normalize_vector(prices)
+        elif setup_data["scaling"]=="origin":
+                volumes = normalize_origin(volumes)
+                prices = normalize_origin(prices)
+        else:
+                print("No such scaling method.")
+                return 0
+        
+        #Create the metada for the row
+        date = stock_df.iloc[pivot, 0]
+        pivot_value =  stock_df.iloc[pivot, 1]
+        meta_data = [date, pivot_value]
+        
+        #Check integrity
+        if len(cols) != (len(volumes) + len(prices) + len(meta_data)):
+                return df
+
+        #Create the row and add it to the dataframe
+        row = np.concatenate((volumes, prices, meta_data))
+        row = pd.Series(data=row, index=cols)
+        df = df.append(row, ignore_index=True)
+
+        return df
 
 
-def visualise_model(df, init_algo="k-means++", n_clusters=10, n_init=4):
+
+
+def visualise_clustering_pca(df, init_algo="k-means++", n_clusters=10, n_init=4):
 
         reduced_data = PCA(n_components=2).fit_transform(df)
         kmeans = KMeans(init=init_algo, n_clusters=n_clusters, n_init=n_init, random_state=0)
@@ -149,7 +274,7 @@ def visualise_model(df, init_algo="k-means++", n_clusters=10, n_init=4):
         plt.show()
 
 def elbow_graph(df):
-        K = range(2, 41, 2)
+        K = range(2, 31, 2)
         inertia = []
 
         for k in K:
@@ -159,7 +284,7 @@ def elbow_graph(df):
                 kmeans.fit(df)
                 time_trained = time()-time0
                 inertia.append(kmeans.inertia_)
-                print(f"Trained a K-Means model with {k} neighbours! Time needed = {time_trained:.3f} seconds.")
+                #print(f"Trained a K-Means model with {k} neighbours! Time needed = {time_trained:.3f} seconds.")
 
         plt.figure(figsize=(16,8))
         plt.plot(K, inertia, 'bx-')
@@ -169,10 +294,9 @@ def elbow_graph(df):
         plt.title('Elbow Method showing the optimal k')
         plt.show()
 
-        return 0
 
 def silhouette_graph(df):
-        K = range(2, 41, 2)
+        K = range(2, 31, 2)
         silhouette = []
 
         for k in K:
@@ -184,7 +308,7 @@ def silhouette_graph(df):
                 silhouette.append(silhouette_score(df, kmeans.predict(df)))
                 time_trained = time()- time0
 
-                print(f"Calculated silhouette with {k} neighbours! Time needed = {time_trained:.3f} seconds.")
+                #print(f"Calculated silhouette with {k} neighbours! Time needed = {time_trained:.3f} seconds.")
 
 
 
@@ -199,96 +323,42 @@ def silhouette_graph(df):
 def visualise_clusters(df, n_per_cluster=5):
         clusters = []
         for i in df["Cluster"].unique():
-                clusters.append(df[df["Cluster"] == i].drop("Cluster", axis=1))
+                clusters.append(df[df["Cluster"] == i])
 
         for cluster in clusters:
                 visualise_trend(cluster.sample(n_per_cluster))
 
-def visualise_trend(df, vol_data=True):
+def visualise_trend(df):
         n_plots = len(df)
         n_values = len(df.columns)
-
-        if vol_data:
-                prices = df.iloc[:, int((n_values -3)/2):-2]
-        else:
-                prices = df.iloc[:,:-2]
-
+        prices = df.iloc[:, int((n_values - 3)/2):-3]
+        
         fig, axs = plt.subplots(n_plots, 1, sharex=True)
         for index, row in enumerate(prices.iterrows()):
                 axs[index].plot(row[1])
                 axs[index].set_xticklabels(row[1].index, rotation="vertical")
 
-        return 0
 
-def evaluate(model, X_test, y_test, silent=False):
+def accuracy_score(y_pred, y_test, silent=False):
     """
-    Input: a regressor, the matrix with test features, the vector with test labels.
+    Input: the vectors with test and predicted labels.
     Output: a list with the accuracy, the R2 coefficient of determination, and the average error (absolute)
     """
     
-    y_predict = model.predict(X_test)
-    errors = abs(y_predict - y_test)
-    mape = 100 * np.mean(errors / y_test)
-    avg_error = np.mean(errors)
+    errors = abs(y_pred - y_test)
+    mape = 100 * np.mean(errors/abs(y_test))
     accuracy = 100 - mape
-    r2 = r2_score(y_test, y_predict)
-    if not silent:
-        print('---Model Performance---')
-        print(model)
-        #print(X_test.columns)
-        print('\nAverage Absolute Error: {:0.1f} dollars.'.format(np.mean(errors)))
-        print('Mean squared error: %.2f' % mean_squared_error(y_test, y_predict, squared=False))
-        print('Accuracy = {:0.2f}%.'.format(accuracy))
-        # The coefficient of determination: 1 is perfect prediction
-        print('Coefficient of determination: %.2f\n' % r2)
     
-    return [accuracy, r2, avg_error]
+    return accuracy
 
-def run():
-        df = import_df(path="spotify_songs.csv")
-        modeling_df = df.drop(columns=["song_name", "song_id", "artist_name", "artist_id"])
-        
-        #elbow_graph(modeling_df)
-        #silhouette_graph(modeling_df)
-        #visualise_model(modeling_df, n_clusters=15)
-
-        model, inertia, fit_time = create_model(modeling_df, n_clusters=15)
-
-        save_model(model, path="music_model.pkl")
-
-        kmeans_model = model[-1]
-
-        print(f"Results for {kmeans_model}: inertia = {inertia:.2f}; fit_time = {fit_time:.3f}")
-
-        return 0
-
-"""
-def _create_model(df, init_algo="k-means++", n_clusters=10, n_init=4):
-        scaler = StandardScaler()
-        kmeans = KMeans(init=init_algo, n_clusters=n_clusters, n_init=n_init, random_state=0)
-        t0 = time()
-        print("Initiating fit...")
-        model = make_pipeline(scaler, kmeans).fit(df)
-        fit_time = time() - t0
-        print(f"Fit ended in {fit_time:.3f} seconds.")
-        results = (model, model[-1].inertia_, fit_time)
-        return results
-
-def save_model(model, path="music_model.pkl"):
-        kmeans_model = model[-1]
-        save_text = f"Model saved - {kmeans_model}\nInertia = {kmeans_model.inertia_:.2f}\n"
-        time_text = str(datetime.now())[:-10] + "h" + "\n"
-        file_text = f"Filename: {path}\n"
+def save_clustering_model(model, path="clustering_model.pkl"):
 
         with open(path, "wb") as f:
                 pickle.dump(model,f)
-
-        with open("model_log.txt", "a") as f:
-                f.write("--------------\n" + save_text + time_text + file_text)
         
         return 0
 
-def load_model(path="music_model.pkl"):
+def load_clustering_model(path="clustering_model.pkl"):
 
         try:
                 with open(path, "rb") as f:
@@ -297,7 +367,19 @@ def load_model(path="music_model.pkl"):
                 print("Model pickle not found!") 
         
         return model
-"""
+
+
+
+def get_label(x):
+        labels = ["Bad", "Neutral", "Good"]
+        if x < -1:
+                return labels[0]
+        elif x < 3:
+                return labels[1]
+        else:
+                return labels[2]
+
+
 
 
 if __name__ == "__main__":
